@@ -16,19 +16,8 @@ import tech.ydb.core.utils.FutureTools;
 @ExperimentalApi("YDB Tracer is experimental and API may change without notice")
 public interface Span {
     Span NOOP = new Span() {
+        // No operations.
     };
-
-    /**
-     * Returns W3C traceparent value for request propagation.
-     *
-     * <p>For {@link #NOOP} this returns an empty string. Check {@link #isValid()} to decide whether
-     * trace headers should be sent to server.
-     *
-     * @return traceparent value
-     */
-    default String getId() {
-        return "";
-    }
 
     /**
      * Indicates whether this span carries a real tracing context.
@@ -39,23 +28,6 @@ public interface Span {
         return false;
     }
 
-    /**
-     * Sets a string attribute on the span.
-     *
-     * @param key attribute key
-     * @param value attribute value, may be null
-     */
-    default void setAttribute(String key, @Nullable String value) {
-    }
-
-    /**
-     * Sets a long attribute on the span.
-     *
-     * @param key attribute key
-     * @param value attribute value
-     */
-    default void setAttribute(String key, long value) {
-    }
 
     /**
      * Sets span status (success or error) with human-readable message.
@@ -66,6 +38,10 @@ public interface Span {
     default void setStatus(@Nullable Status status, @Nullable Throwable error) {
     }
 
+    default String getId() {
+        return "";
+    }
+
     /**
      * Makes this span current in the active execution context.
      *
@@ -74,6 +50,10 @@ public interface Span {
     default Scope makeCurrent() {
         return () -> {
         };
+    }
+
+    /** Sets a string attribute on the span (ignored by Noop implementation). */
+    default void setAttribute(String key, String value) {
     }
 
     /**
@@ -88,10 +68,11 @@ public interface Span {
         };
     }
 
-    /**
-     * Ends (finishes) this span.
-     */
-    default void end() {
+    /** Sets a long attribute on the span (ignored by Noop implementation). */
+    default void setAttribute(String key, long value) {
+    }
+
+    default void setError(Status status) {
     }
 
     /**
@@ -101,12 +82,16 @@ public interface Span {
      * @param span the span to finalize
      * @param future the future to observe
      * @return the same future (for chaining)
+     * Sets span status to error from exception.
      */
     static CompletableFuture<Status> endOnStatus(Span span, CompletableFuture<Status> future) {
         return span.isValid() ? future.whenComplete((status, th) -> {
             span.setStatus(status, FutureTools.unwrapCompletionException(th));
             span.end();
         }) : future;
+    }
+
+    default void setError(Throwable error) {
     }
 
     /**
@@ -124,4 +109,8 @@ public interface Span {
             span.end();
         }) : future;
     }
+
+    default void end() {
+    }
 }
+
