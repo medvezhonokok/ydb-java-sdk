@@ -94,6 +94,16 @@ public final class OpenTelemetryTracer implements Tracer {
 
         @Override
         public void setStatus(@Nullable Status status, @Nullable Throwable error) {
+            if (status != null) {
+                if (status.isSuccess()) {
+                    span.setStatus(StatusCode.OK);
+                } else {
+                    tech.ydb.core.StatusCode code = status.getCode();
+                    span.setAttribute("db.response.status_code", code.toString());
+                    span.setAttribute("error.type", code.isTransportError() ? "transport_error" : "ydb_error");
+                    span.setStatus(StatusCode.ERROR, status.toString());
+                }
+            }
             if (error != null) {
                 if (error instanceof UnexpectedResultException) {
                     tech.ydb.core.StatusCode code = ((UnexpectedResultException) error).getStatus().getCode();
@@ -103,16 +113,7 @@ public final class OpenTelemetryTracer implements Tracer {
                     span.setAttribute("error.type", error.getClass().getName());
                 }
                 span.setStatus(StatusCode.ERROR, error.getMessage());
-                return;
             }
-            if (status != null && !status.isSuccess()) {
-                tech.ydb.core.StatusCode code = status.getCode();
-                span.setAttribute("db.response.status_code", code.toString());
-                span.setAttribute("error.type", code.isTransportError() ? "transport_error" : "ydb_error");
-                span.setStatus(StatusCode.ERROR, status.toString());
-                return;
-            }
-            span.setStatus(StatusCode.OK);
         }
 
         @Override

@@ -211,15 +211,6 @@ public class QueryTracingTest {
             // not needed for this test
         }
 
-        @Override
-        public void setError(Status status) {
-            // not needed for this test
-        }
-
-        @Override
-        public void setError(Throwable error) {
-            // not needed for this test
-        }
 
         @Override
         public void end() {

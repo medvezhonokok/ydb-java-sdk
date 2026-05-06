@@ -149,10 +149,10 @@ abstract class SessionImpl implements QuerySession {
         Context ctx = Context.ROOT.fork();
         Context previous = ctx.attach();
         try {
-            AtomicBoolean pessimize = new AtomicBoolean(false);
+            AtomicBoolean pessimizationHook = new AtomicBoolean(false);
             GrpcRequestSettings grpcSettings = makeOptions(settings)
                     .disableDeadline()
-                    .withPessimizationHook(pessimize::get)
+                    .withPessimizationHook(pessimizationHook::get)
                     .build();
             GrpcReadStream<YdbQuery.SessionState> origin = rpc.attachSession(request, grpcSettings);
             return new GrpcReadStream<Status>() {
@@ -163,17 +163,21 @@ abstract class SessionImpl implements QuerySession {
                             String msg = TextFormat.shortDebugString(message);
                             logger.trace("session '{}' got attach stream message {}", sessionId, msg);
                         }
-                        if (message.hasNodeShutdown() || message.hasSessionShutdown()) {
-                            if (message.hasNodeShutdown() && nodeID != 0) {
-                                pessimize.set(true);
-                            }
-                            updateSessionState(Status.of(StatusCode.BAD_SESSION));
-                            observer.onNext(Status.of(StatusCode.BAD_SESSION));
-                            return;
-                        }
+
                         StatusCode code = StatusCode.fromProto(message.getStatus());
                         Status status = Status.of(code, Issue.fromPb(message.getIssuesList()));
                         updateSessionState(status);
+                        switch (message.getSessionHintCase()) {
+                            case NODE_SHUTDOWN:
+                                pessimizationHook.set(nodeID != 0);
+                                updateSessionState(Status.of(StatusCode.BAD_SESSION));
+                                break;
+                            case SESSION_SHUTDOWN:
+                                updateSessionState(Status.of(StatusCode.BAD_SESSION));
+                                break;
+                            default:
+                                break;
+                        }
                         observer.onNext(status);
                     });
                 }
