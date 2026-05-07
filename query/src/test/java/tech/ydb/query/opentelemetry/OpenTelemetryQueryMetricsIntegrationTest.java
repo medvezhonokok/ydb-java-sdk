@@ -35,11 +35,10 @@ public class OpenTelemetryQueryMetricsIntegrationTest {
     @ClassRule
     public static final YdbHelperRule YDB = new YdbHelperRule();
 
-    private static final AttributeKey<String> DB_SYSTEM_NAME = AttributeKey.stringKey("db.system.name");
-    private static final AttributeKey<String> DB_NAMESPACE = AttributeKey.stringKey("db.namespace");
-    private static final AttributeKey<String> SERVER_ADDRESS = AttributeKey.stringKey("server.address");
-    private static final AttributeKey<Long> SERVER_PORT = AttributeKey.longKey("server.port");
+    private static final AttributeKey<String> DATABASE = AttributeKey.stringKey("database");
+    private static final AttributeKey<String> ENDPOINT = AttributeKey.stringKey("endpoint");
     private static final AttributeKey<String> OPERATION_NAME = AttributeKey.stringKey("operation.name");
+    private static final AttributeKey<String> STATUS_CODE = AttributeKey.stringKey("status_code");
     private static final AttributeKey<String> POOL_NAME = AttributeKey.stringKey("ydb.query.session.pool.name");
     private static final AttributeKey<String> SESSION_STATE = AttributeKey.stringKey("ydb.query.session.state");
 
@@ -60,12 +59,9 @@ public class OpenTelemetryQueryMetricsIntegrationTest {
                 .setMeterProvider(meterProvider)
                 .build();
 
-        String host = extractHost(YDB.endpoint());
-        int port = extractPort(YDB.endpoint());
-
         transport = GrpcTransport.forEndpoint(YDB.endpoint(), YDB.database())
                 .withAuthProvider(new TokenAuthProvider(YDB.authToken()))
-                .withMeter(OpenTelemetryMeter.fromOpenTelemetry(openTelemetry, YDB.database(), host, port))
+                .withMeter(OpenTelemetryMeter.fromOpenTelemetry(openTelemetry, YDB.database(), YDB.endpoint()))
                 .build();
     }
 
@@ -99,10 +95,8 @@ public class OpenTelemetryQueryMetricsIntegrationTest {
         HistogramPointData point = findHistogramPoint(metric, "ExecuteQuery");
         Assert.assertNotNull("No histogram point for ExecuteQuery", point);
         Assert.assertTrue("Duration must be > 0", point.getSum() > 0);
-        Assert.assertEquals("ydb", point.getAttributes().get(DB_SYSTEM_NAME));
-        Assert.assertEquals(YDB.database(), point.getAttributes().get(DB_NAMESPACE));
-        Assert.assertNotNull(point.getAttributes().get(SERVER_ADDRESS));
-        Assert.assertNotNull(point.getAttributes().get(SERVER_PORT));
+        Assert.assertEquals(YDB.database(), point.getAttributes().get(DATABASE));
+        Assert.assertEquals(YDB.endpoint(), point.getAttributes().get(ENDPOINT));
     }
 
     @Test
@@ -143,6 +137,10 @@ public class OpenTelemetryQueryMetricsIntegrationTest {
         Assert.assertFalse("Failed counter must have at least one point", points.isEmpty());
         long total = points.stream().mapToLong(LongPointData::getValue).sum();
         Assert.assertTrue("Failed counter must be > 0", total > 0);
+        Assert.assertTrue("Failed counter must carry status_code attribute",
+                points.stream().anyMatch(p -> p.getAttributes().get(STATUS_CODE) != null));
+        Assert.assertTrue("Failed counter must carry database attribute",
+                points.stream().anyMatch(p -> YDB.database().equals(p.getAttributes().get(DATABASE))));
     }
 
     @Test
