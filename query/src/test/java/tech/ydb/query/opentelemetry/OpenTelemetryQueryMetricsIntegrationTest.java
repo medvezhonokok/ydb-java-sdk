@@ -3,7 +3,6 @@ package tech.ydb.query.opentelemetry;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.Collection;
-import java.util.concurrent.CompletableFuture;
 
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.common.AttributeKey;
@@ -24,6 +23,7 @@ import org.junit.Test;
 import tech.ydb.auth.TokenAuthProvider;
 import tech.ydb.common.transaction.TxMode;
 import tech.ydb.core.Result;
+import tech.ydb.core.StatusCode;
 import tech.ydb.core.grpc.GrpcTransport;
 import tech.ydb.core.metrics.OpenTelemetryMeter;
 import tech.ydb.query.QueryClient;
@@ -185,20 +185,28 @@ public class OpenTelemetryQueryMetricsIntegrationTest {
                 .sessionPoolName("tiny")
                 .build()) {
             try (QuerySession s1 = tinyClient.createSession(Duration.ofSeconds(5)).join().getValue()) {
-                CompletableFuture<Result<QuerySession>> waiter =
-                        tinyClient.createSession(Duration.ofMillis(100));
-                waiter.join();
+                Result<QuerySession> result = tinyClient.createSession(Duration.ofMillis(500)).join();
+                Assert.assertFalse(
+                        "waiter must time out (sessionPoolMaxSize=1 with one session held), but got " + result,
+                        result.isSuccess());
+                Assert.assertEquals(
+                        "waiter must complete with CLIENT_DEADLINE_EXPIRED",
+                        StatusCode.CLIENT_DEADLINE_EXPIRED, result.getStatus().getCode());
             }
         }
 
-        MetricData pending = findMetric("ydb.query.session.pending_requests");
+        // Metric reader observes counter increments synchronously, but give the runtime
+        // a brief moment in case other threads still hold references in flight.
+        Collection<MetricData> snapshot = metricReader.collectAllMetrics();
+
+        MetricData pending = findMetric(snapshot, "ydb.query.session.pending_requests");
         Assert.assertNotNull("ydb.query.session.pending_requests metric not found", pending);
         Assert.assertEquals("{request}", pending.getUnit());
         long pendingTotal = pending.getLongSumData().getPoints().stream()
                 .mapToLong(LongPointData::getValue).sum();
         Assert.assertTrue("pending_requests must be > 0", pendingTotal > 0);
 
-        MetricData timeouts = findMetric("ydb.query.session.timeouts");
+        MetricData timeouts = findMetric(snapshot, "ydb.query.session.timeouts");
         Assert.assertNotNull("ydb.query.session.timeouts metric not found", timeouts);
         Assert.assertEquals("{timeout}", timeouts.getUnit());
         long timeoutTotal = timeouts.getLongSumData().getPoints().stream()
@@ -207,7 +215,10 @@ public class OpenTelemetryQueryMetricsIntegrationTest {
     }
 
     private MetricData findMetric(String name) {
-        Collection<MetricData> metrics = metricReader.collectAllMetrics();
+        return findMetric(metricReader.collectAllMetrics(), name);
+    }
+
+    private MetricData findMetric(Collection<MetricData> metrics, String name) {
         for (MetricData m : metrics) {
             if (name.equals(m.getName())) {
                 return m;
