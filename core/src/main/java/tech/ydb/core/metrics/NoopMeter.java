@@ -6,7 +6,6 @@ public final class NoopMeter implements Meter {
     public static final NoopMeter INSTANCE = new NoopMeter();
 
     private NoopMeter() {
-        // No operations.
     }
 
     public static NoopMeter getInstance() {
@@ -14,17 +13,26 @@ public final class NoopMeter implements Meter {
     }
 
     @Override
-    public void recordOperation(String name, long durationNanos, Status status) {
+    public void recordOperationDuration(String operationName, long durationNanos) {
+    }
 
+    @Override
+    public void recordOperationFailed(String operationName, Status status) {
     }
 
     @Override
     public void registerSessionPool(String poolName, SessionPoolObserver observer) {
-
     }
 
     @Override
     public void recordSessionCreateTime(String poolName, long durationNanos) {
+    }
 
+    @Override
+    public void incrementSessionPendingRequests(String poolName) {
+    }
+
+    @Override
+    public void incrementSessionTimeouts(String poolName) {
     }
 }

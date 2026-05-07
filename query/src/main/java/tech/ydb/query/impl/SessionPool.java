@@ -22,9 +22,9 @@ import tech.ydb.core.Status;
 import tech.ydb.core.StatusCode;
 import tech.ydb.core.UnexpectedResultException;
 import tech.ydb.core.grpc.GrpcReadStream;
+import tech.ydb.core.metrics.Meter;
 import tech.ydb.core.metrics.SessionPoolObserver;
 import tech.ydb.core.tracing.Span;
-import tech.ydb.core.tracing.SpanFinalizer;
 import tech.ydb.core.utils.FutureTools;
 import tech.ydb.proto.query.YdbQuery;
 import tech.ydb.query.QuerySession;
@@ -56,6 +56,8 @@ class SessionPool implements AutoCloseable {
             .build();
 
     private final int minSize;
+    private final String poolName;
+    private final Meter meter;
     private final Clock clock;
     private final ScheduledExecutorService scheduler;
     private final WaitingQueue<PooledQuerySession> queue;
@@ -63,8 +65,10 @@ class SessionPool implements AutoCloseable {
     private final StatsImpl stats = new StatsImpl();
 
     SessionPool(Clock clock, QueryServiceRpc rpc, ScheduledExecutorService scheduler, int minSize, int maxSize,
-                Duration idleDuration) {
+                Duration idleDuration, String poolName) {
         this.minSize = minSize;
+        this.poolName = poolName;
+        this.meter = rpc.getMeter();
 
         this.clock = clock;
         this.scheduler = scheduler;
@@ -76,12 +80,23 @@ class SessionPool implements AutoCloseable {
                 cleaner.periodMillis / 2,
                 cleaner.periodMillis,
                 TimeUnit.MILLISECONDS);
-        logger.info("init QuerySession pool, min size = {}, max size = {}, keep alive period = {}",
+        logger.info("init QuerySession pool '{}', min size = {}, max size = {}, keep alive period = {}",
+                poolName,
                 minSize,
                 maxSize,
                 cleaner.periodMillis);
 
-        rpc.getMeter().registerSessionPool("default", new SessionPoolObserver() {
+        meter.registerSessionPool(poolName, new SessionPoolObserver() {
+            @Override
+            public int getMinSize() {
+                return minSize;
+            }
+
+            @Override
+            public int getMaxSize() {
+                return queue.getTotalLimit();
+            }
+
             @Override
             public int getIdleCount() {
                 return queue.getIdleCount();
@@ -90,11 +105,6 @@ class SessionPool implements AutoCloseable {
             @Override
             public int getUsedCount() {
                 return queue.getUsedCount();
-            }
-
-            @Override
-            public int getPendingCount() {
-                return queue.getPendingCount();
             }
         });
     }
@@ -121,8 +131,9 @@ class SessionPool implements AutoCloseable {
 
         // If next session is not ready - add timeout canceler
         if (!pollNext(future)) {
+            meter.incrementSessionPendingRequests(poolName);
             future.whenComplete(new Canceller(scheduler.schedule(
-                    new Timeout(future),
+                    new Timeout(future, meter, poolName),
                     timeout.toMillis(),
                     TimeUnit.MILLISECONDS)
             ));
@@ -297,43 +308,24 @@ class SessionPool implements AutoCloseable {
             try {
                 Span createSpan = rpc.startSpan("ydb.CreateSession");
                 long startNanos = System.nanoTime();
-
                 stats.requested.increment();
-                return SessionImpl
-                        .createSession(rpc, CREATE_SETTINGS, true, createSpan)
+                return Span.endOnResult(createSpan, SessionImpl.createSession(rpc, CREATE_SETTINGS, true, createSpan))
+                        .whenComplete((r, th) -> {
+                            long elapsed = System.nanoTime() - startNanos;
+                            meter.recordSessionCreateTime(poolName, elapsed);
+                            meter.recordOperationDuration("CreateSession", elapsed);
+                            if (r != null && !r.isSuccess()) {
+                                meter.recordOperationFailed("CreateSession", r.getStatus());
+                            }
+                        })
                         .thenCompose(r -> {
                             if (!r.isSuccess()) {
-                                SpanFinalizer.finishByStatus(createSpan, r.getStatus());
                                 stats.failed.increment();
                                 throw new UnexpectedResultException("create session problem", r.getStatus());
                             }
                             PooledQuerySession session = new PooledQuerySession(rpc, r.getValue());
                             return session.start();
-                        })
-                        .whenComplete((result, th) -> {
-                            if (th != null) {
-                                Throwable error = FutureTools.unwrapCompletionException(th);
-                                if (error instanceof UnexpectedResultException) {
-                                    SpanFinalizer.finishByStatus(
-                                            createSpan,
-                                            ((UnexpectedResultException) error).getStatus()
-                                    );
-                                } else {
-                                    SpanFinalizer.finishByError(createSpan, error);
-                                }
-                                return;
-                            }
-
-                            SpanFinalizer.finishByStatus(createSpan, result.getStatus());
-                        })
-                        .whenComplete((status, th) -> {
-                            long elapsed = System.nanoTime() - startNanos;
-                            Status finalStatus = status != null
-                                    ? status.getStatus() : Status.of(StatusCode.CLIENT_INTERNAL_ERROR);
-                            rpc.getMeter().recordOperation("ydb.CreateSession", elapsed, finalStatus);
-                            rpc.getMeter().recordSessionCreateTime("default", elapsed);
-                        })
-                        .thenApply(Result::getValue);
+                        }).thenApply(Result::getValue);
             } finally {
                 ctx.detach(previous);
             }
@@ -491,15 +483,19 @@ class SessionPool implements AutoCloseable {
         );
 
         private final CompletableFuture<Result<QuerySession>> f;
+        private final Meter meter;
+        private final String poolName;
 
-        Timeout(CompletableFuture<Result<QuerySession>> f) {
+        Timeout(CompletableFuture<Result<QuerySession>> f, Meter meter, String poolName) {
             this.f = f;
+            this.meter = meter;
+            this.poolName = poolName;
         }
 
         @Override
         public void run() {
-            if (f != null && !f.isDone()) {
-                f.complete(Result.fail(EXPIRE));
+            if (f != null && !f.isDone() && f.complete(Result.fail(EXPIRE))) {
+                meter.incrementSessionTimeouts(poolName);
             }
         }
     }

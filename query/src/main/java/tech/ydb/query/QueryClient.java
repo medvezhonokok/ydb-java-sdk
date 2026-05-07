@@ -55,6 +55,8 @@ public interface QueryClient extends AutoCloseable {
 
         Builder sessionMaxIdleTime(Duration duration);
 
+        Builder sessionPoolName(String poolName);
+
         QueryClient build();
     }
 }

@@ -24,13 +24,16 @@ public class QueryClientImpl implements QueryClient {
     private final Tracer tracer;
 
     public QueryClientImpl(Builder builder) {
+        String poolName = builder.sessionPoolName != null
+                ? builder.sessionPoolName : builder.transport.getDatabase();
         this.pool = new SessionPool(
                 Clock.systemUTC(),
                 new QueryServiceRpc(builder.transport),
                 builder.transport.getScheduler(),
                 builder.sessionPoolMinSize,
                 builder.sessionPoolMaxSize,
-                builder.sessionPoolIdleDuration
+                builder.sessionPoolIdleDuration,
+                poolName
         );
         this.scheduler = builder.transport.getScheduler();
         this.tracer = builder.transport.getTracer();
@@ -77,6 +80,7 @@ public class QueryClientImpl implements QueryClient {
         private int sessionPoolMinSize = 0;
         private int sessionPoolMaxSize = 50;
         private Duration sessionPoolIdleDuration = Duration.ofMinutes(5);
+        private String sessionPoolName = null;
 
         Builder(GrpcTransport transport) {
             Preconditions.checkArgument(transport != null, "transport is null");
@@ -123,6 +127,14 @@ public class QueryClientImpl implements QueryClient {
                 prettyDuration(duration), prettyDuration(MAX_DURATION));
 
             this.sessionPoolIdleDuration = duration;
+            return this;
+        }
+
+        @Override
+        public Builder sessionPoolName(String poolName) {
+            Preconditions.checkArgument(poolName != null && !poolName.isEmpty(),
+                    "sessionPoolName must be a non-empty string");
+            this.sessionPoolName = poolName;
             return this;
         }
 

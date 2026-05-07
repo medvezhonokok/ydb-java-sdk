@@ -16,7 +16,6 @@ import tech.ydb.core.StatusCode;
 import tech.ydb.core.UnexpectedResultException;
 import tech.ydb.core.grpc.GrpcTransport;
 import tech.ydb.core.tracing.Span;
-import tech.ydb.core.tracing.SpanFinalizer;
 import tech.ydb.core.tracing.Tracer;
 import tech.ydb.proto.ValueProtos;
 import tech.ydb.proto.query.YdbQuery;
@@ -93,6 +92,9 @@ public class TableClientImpl implements TableClient {
             if (tc.getBeginTx().hasSnapshotReadOnly()) {
                 return TxControl.txModeCtrl(TxMode.SNAPSHOT_RO, tc.getCommitTx());
             }
+            if (tc.getBeginTx().hasSnapshotReadWrite()) {
+                return TxControl.txModeCtrl(TxMode.SNAPSHOT_RW, tc.getCommitTx());
+            }
             if (tc.getBeginTx().hasStaleReadOnly()) {
                 return TxControl.txModeCtrl(TxMode.STALE_RO, tc.getCommitTx());
             }
@@ -130,10 +132,10 @@ public class TableClientImpl implements TableClient {
             final List<Issue> issues = new ArrayList<>();
             final List<ValueProtos.ResultSet> results = new ArrayList<>();
             Span span = querySession.startSpan("ydb.ExecuteQuery");
-            final long startNanos = System.nanoTime();
+            long startNanos = System.nanoTime();
 
             QueryStream stream = querySession.new StreamImpl(querySession.createGrpcStream(query, tc, prms, qs, span),
-                    span, startNanos, "ydb.ExecuteQuery") {
+                    span, startNanos, "ExecuteQuery") {
                 @Override
                 void handleTxMeta(String txID) {
                     txRef.set(txID);
@@ -204,23 +206,23 @@ public class TableClientImpl implements TableClient {
         }
 
         @Override
-        public CompletableFuture<Status> commitTransaction(String txId, CommitTxSettings settings) {
+        protected CompletableFuture<Status> commitTransactionInternal(String txId, CommitTxSettings settings) {
             Span span = querySession.startSpan("ydb.Commit");
             CommitTransactionSettings querySettings = CommitTransactionSettings.newBuilder()
                     .withTraceId(settings.getTraceId())
                     .withRequestTimeout(settings.getTimeoutDuration())
                     .build();
-            return querySession.commitById(txId, querySettings, span).whenComplete(SpanFinalizer.whenComplete(span));
+            return Span.endOnStatus(span, querySession.commitById(txId, querySettings, span));
         }
 
         @Override
-        public CompletableFuture<Status> rollbackTransaction(String txId, RollbackTxSettings settings) {
+        protected CompletableFuture<Status> rollbackTransactionInternal(String txId, RollbackTxSettings settings) {
             Span span = querySession.startSpan("ydb.Rollback");
             RollbackTransactionSettings querySettings = RollbackTransactionSettings.newBuilder()
                     .withTraceId(settings.getTraceId())
                     .withRequestTimeout(settings.getTimeoutDuration())
                     .build();
-            return querySession.rollbackById(txId, querySettings, span).whenComplete(SpanFinalizer.whenComplete(span));
+            return Span.endOnStatus(span, querySession.rollbackById(txId, querySettings, span));
         }
 
         private final class TracedTableTransaction implements TableTransaction {
@@ -257,7 +259,7 @@ public class TableClientImpl implements TableClient {
                 if (txId == null) {
                     return delegate.rollback(settings);
                 }
-                return TableSession.this.rollbackTransaction(txId, settings);
+                return rollbackTransactionInternal(txId, settings);
             }
 
             @Override

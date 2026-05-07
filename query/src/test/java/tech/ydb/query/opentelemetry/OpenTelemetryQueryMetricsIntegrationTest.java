@@ -1,8 +1,9 @@
-package tech.ydb.opentelemetry;
+package tech.ydb.query.opentelemetry;
 
 import java.io.IOException;
 import java.time.Duration;
 import java.util.Collection;
+import java.util.concurrent.CompletableFuture;
 
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.common.AttributeKey;
@@ -22,13 +23,15 @@ import org.junit.Test;
 
 import tech.ydb.auth.TokenAuthProvider;
 import tech.ydb.common.transaction.TxMode;
+import tech.ydb.core.Result;
 import tech.ydb.core.grpc.GrpcTransport;
+import tech.ydb.core.metrics.OpenTelemetryMeter;
 import tech.ydb.query.QueryClient;
 import tech.ydb.query.QuerySession;
 import tech.ydb.query.QueryTransaction;
 import tech.ydb.test.junit4.YdbHelperRule;
 
-public class OpenTelemetryMetricsIntegrationTest {
+public class OpenTelemetryQueryMetricsIntegrationTest {
     @ClassRule
     public static final YdbHelperRule YDB = new YdbHelperRule();
 
@@ -36,7 +39,9 @@ public class OpenTelemetryMetricsIntegrationTest {
     private static final AttributeKey<String> DB_NAMESPACE = AttributeKey.stringKey("db.namespace");
     private static final AttributeKey<String> SERVER_ADDRESS = AttributeKey.stringKey("server.address");
     private static final AttributeKey<Long> SERVER_PORT = AttributeKey.longKey("server.port");
-    private static final AttributeKey<String> OPERATION_NAME = AttributeKey.stringKey("ydb.operation.name");
+    private static final AttributeKey<String> OPERATION_NAME = AttributeKey.stringKey("operation.name");
+    private static final AttributeKey<String> POOL_NAME = AttributeKey.stringKey("ydb.query.session.pool.name");
+    private static final AttributeKey<String> SESSION_STATE = AttributeKey.stringKey("ydb.query.session.state");
 
     private static InMemoryMetricReader metricReader;
     private static SdkMeterProvider meterProvider;
@@ -87,11 +92,12 @@ public class OpenTelemetryMetricsIntegrationTest {
             session.createQuery("SELECT 1", TxMode.NONE).execute().join().getStatus().expectSuccess();
         }
 
-        MetricData metric = findMetric("db.client.operation.duration");
-        Assert.assertNotNull("db.client.operation.duration metric not found", metric);
+        MetricData metric = findMetric("ydb.client.operation.duration");
+        Assert.assertNotNull("ydb.client.operation.duration metric not found", metric);
+        Assert.assertEquals("s", metric.getUnit());
 
-        HistogramPointData point = findHistogramPoint(metric, "ydb.ExecuteQuery");
-        Assert.assertNotNull("No histogram point for ydb.ExecuteQuery", point);
+        HistogramPointData point = findHistogramPoint(metric, "ExecuteQuery");
+        Assert.assertNotNull("No histogram point for ExecuteQuery", point);
         Assert.assertTrue("Duration must be > 0", point.getSum() > 0);
         Assert.assertEquals("ydb", point.getAttributes().get(DB_SYSTEM_NAME));
         Assert.assertEquals(YDB.database(), point.getAttributes().get(DB_NAMESPACE));
@@ -113,13 +119,13 @@ public class OpenTelemetryMetricsIntegrationTest {
             txRollback.rollback().join().expectSuccess();
         }
 
-        MetricData metric = findMetric("db.client.operation.duration");
+        MetricData metric = findMetric("ydb.client.operation.duration");
         Assert.assertNotNull(metric);
 
-        Assert.assertNotNull("No histogram point for ydb.Commit",
-                findHistogramPoint(metric, "ydb.Commit"));
-        Assert.assertNotNull("No histogram point for ydb.Rollback",
-                findHistogramPoint(metric, "ydb.Rollback"));
+        Assert.assertNotNull("No histogram point for Commit",
+                findHistogramPoint(metric, "Commit"));
+        Assert.assertNotNull("No histogram point for Rollback",
+                findHistogramPoint(metric, "Rollback"));
     }
 
     @Test
@@ -131,6 +137,7 @@ public class OpenTelemetryMetricsIntegrationTest {
 
         MetricData metric = findMetric("ydb.client.operation.failed");
         Assert.assertNotNull("ydb.client.operation.failed metric not found", metric);
+        Assert.assertEquals("{operation}", metric.getUnit());
 
         Collection<LongPointData> points = metric.getLongSumData().getPoints();
         Assert.assertFalse("Failed counter must have at least one point", points.isEmpty());
@@ -140,16 +147,63 @@ public class OpenTelemetryMetricsIntegrationTest {
 
     @Test
     public void sessionPoolMetricsAreReported() {
-        // создаём сессию чтобы пул оживился
         try (QuerySession session = queryClient.createSession(Duration.ofSeconds(5)).join().getValue()) {
             session.createQuery("SELECT 1", TxMode.NONE).execute().join().getStatus().expectSuccess();
         }
 
-        MetricData metric = findMetric("ydb.query.session.count");
-        Assert.assertNotNull("ydb.query.session.count metric not found", metric);
+        MetricData count = findMetric("ydb.query.session.count");
+        Assert.assertNotNull("ydb.query.session.count metric not found", count);
+        Assert.assertEquals("{session}", count.getUnit());
+        Assert.assertTrue("session.count must have idle/used buckets",
+                count.getLongGaugeData().getPoints().stream()
+                        .map(p -> p.getAttributes().get(SESSION_STATE))
+                        .anyMatch("idle"::equals));
+
+        MetricData min = findMetric("ydb.query.session.min");
+        Assert.assertNotNull("ydb.query.session.min metric not found", min);
+        Assert.assertEquals("{session}", min.getUnit());
+        Assert.assertTrue("min must have a pool.name attribute",
+                min.getLongGaugeData().getPoints().stream()
+                        .anyMatch(p -> p.getAttributes().get(POOL_NAME) != null));
+
+        MetricData max = findMetric("ydb.query.session.max");
+        Assert.assertNotNull("ydb.query.session.max metric not found", max);
+        Assert.assertEquals("{session}", max.getUnit());
+
+        MetricData createTime = findMetric("ydb.query.session.create_time");
+        Assert.assertNotNull("ydb.query.session.create_time metric not found", createTime);
+        Assert.assertEquals("s", createTime.getUnit());
+        Assert.assertFalse("session.create_time must have at least one point",
+                createTime.getHistogramData().getPoints().isEmpty());
     }
 
-    // --- helpers ---
+    @Test
+    public void sessionPendingAndTimeoutsMetricsAreCounters() {
+        try (QueryClient tinyClient = QueryClient.newClient(transport)
+                .sessionPoolMaxSize(1)
+                .sessionPoolName("tiny")
+                .build()) {
+            try (QuerySession s1 = tinyClient.createSession(Duration.ofSeconds(5)).join().getValue()) {
+                CompletableFuture<Result<QuerySession>> waiter =
+                        tinyClient.createSession(Duration.ofMillis(100));
+                waiter.join();
+            }
+        }
+
+        MetricData pending = findMetric("ydb.query.session.pending_requests");
+        Assert.assertNotNull("ydb.query.session.pending_requests metric not found", pending);
+        Assert.assertEquals("{request}", pending.getUnit());
+        long pendingTotal = pending.getLongSumData().getPoints().stream()
+                .mapToLong(LongPointData::getValue).sum();
+        Assert.assertTrue("pending_requests must be > 0", pendingTotal > 0);
+
+        MetricData timeouts = findMetric("ydb.query.session.timeouts");
+        Assert.assertNotNull("ydb.query.session.timeouts metric not found", timeouts);
+        Assert.assertEquals("{timeout}", timeouts.getUnit());
+        long timeoutTotal = timeouts.getLongSumData().getPoints().stream()
+                .mapToLong(LongPointData::getValue).sum();
+        Assert.assertTrue("timeouts must be > 0", timeoutTotal > 0);
+    }
 
     private MetricData findMetric(String name) {
         Collection<MetricData> metrics = metricReader.collectAllMetrics();
@@ -172,7 +226,6 @@ public class OpenTelemetryMetricsIntegrationTest {
     }
 
     private static String extractHost(String endpoint) {
-        // endpoint вида grpc://host:port или host:port
         String stripped = endpoint.replaceFirst("grpcs?://", "");
         int colon = stripped.lastIndexOf(':');
         return colon >= 0 ? stripped.substring(0, colon) : stripped;
