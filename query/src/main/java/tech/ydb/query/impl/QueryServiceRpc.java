@@ -7,6 +7,7 @@ import tech.ydb.core.grpc.GrpcReadStream;
 import tech.ydb.core.grpc.GrpcRequestSettings;
 import tech.ydb.core.grpc.GrpcTransport;
 import tech.ydb.core.metrics.Meter;
+import tech.ydb.core.metrics.NoopMeter;
 import tech.ydb.core.operation.StatusExtractor;
 import tech.ydb.core.tracing.Span;
 import tech.ydb.core.tracing.SpanKind;
@@ -55,9 +56,13 @@ class QueryServiceRpc {
     private final Meter meter;
 
     QueryServiceRpc(GrpcTransport transport) {
+        this(transport, NoopMeter.INSTANCE);
+    }
+
+    QueryServiceRpc(GrpcTransport transport, Meter meter) {
         this.transport = transport;
         this.trace = transport.getTracer();
-        this.meter = transport.getMeter();
+        this.meter = meter;
     }
 
     Span startSpan(String spanName) {

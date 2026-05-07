@@ -44,6 +44,7 @@ public class OpenTelemetryQueryMetricsIntegrationTest {
 
     private static InMemoryMetricReader metricReader;
     private static SdkMeterProvider meterProvider;
+    private static OpenTelemetryMeter ydbMeter;
     private static GrpcTransport transport;
 
     private QueryClient queryClient;
@@ -59,9 +60,10 @@ public class OpenTelemetryQueryMetricsIntegrationTest {
                 .setMeterProvider(meterProvider)
                 .build();
 
+        ydbMeter = OpenTelemetryMeter.fromOpenTelemetry(openTelemetry, YDB.database(), YDB.endpoint());
+
         transport = GrpcTransport.forEndpoint(YDB.endpoint(), YDB.database())
                 .withAuthProvider(new TokenAuthProvider(YDB.authToken()))
-                .withMeter(OpenTelemetryMeter.fromOpenTelemetry(openTelemetry, YDB.database(), YDB.endpoint()))
                 .build();
     }
 
@@ -74,7 +76,7 @@ public class OpenTelemetryQueryMetricsIntegrationTest {
 
     @Before
     public void initClient() {
-        queryClient = QueryClient.newClient(transport).build();
+        queryClient = QueryClient.newClient(transport).withMeter(ydbMeter).build();
     }
 
     @After
@@ -178,6 +180,7 @@ public class OpenTelemetryQueryMetricsIntegrationTest {
     @Test
     public void sessionPendingAndTimeoutsMetricsAreCounters() {
         try (QueryClient tinyClient = QueryClient.newClient(transport)
+                .withMeter(ydbMeter)
                 .sessionPoolMaxSize(1)
                 .sessionPoolName("tiny")
                 .build()) {

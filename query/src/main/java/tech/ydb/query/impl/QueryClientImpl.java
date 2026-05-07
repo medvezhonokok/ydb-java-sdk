@@ -9,6 +9,8 @@ import com.google.common.base.Preconditions;
 
 import tech.ydb.core.Result;
 import tech.ydb.core.grpc.GrpcTransport;
+import tech.ydb.core.metrics.Meter;
+import tech.ydb.core.metrics.NoopMeter;
 import tech.ydb.core.tracing.Tracer;
 import tech.ydb.query.QueryClient;
 import tech.ydb.query.QuerySession;
@@ -28,7 +30,7 @@ public class QueryClientImpl implements QueryClient {
                 ? builder.sessionPoolName : builder.transport.getDatabase();
         this.pool = new SessionPool(
                 Clock.systemUTC(),
-                new QueryServiceRpc(builder.transport),
+                new QueryServiceRpc(builder.transport, builder.meter),
                 builder.transport.getScheduler(),
                 builder.sessionPoolMinSize,
                 builder.sessionPoolMaxSize,
@@ -81,6 +83,7 @@ public class QueryClientImpl implements QueryClient {
         private int sessionPoolMaxSize = 50;
         private Duration sessionPoolIdleDuration = Duration.ofMinutes(5);
         private String sessionPoolName = null;
+        private Meter meter = NoopMeter.INSTANCE;
 
         Builder(GrpcTransport transport) {
             Preconditions.checkArgument(transport != null, "transport is null");
@@ -135,6 +138,13 @@ public class QueryClientImpl implements QueryClient {
             Preconditions.checkArgument(poolName != null && !poolName.isEmpty(),
                     "sessionPoolName must be a non-empty string");
             this.sessionPoolName = poolName;
+            return this;
+        }
+
+        @Override
+        public Builder withMeter(Meter meter) {
+            Preconditions.checkArgument(meter != null, "meter is null");
+            this.meter = meter;
             return this;
         }
 
