@@ -42,27 +42,27 @@ public final class OpenTelemetryMeter implements Meter {
 
         this.operationDuration = meter.histogramBuilder("ydb.client.operation.duration")
                 .setUnit("s")
-                .setDescription("Latency of each actual ExecuteQuery / Commit / Rollback attempt.")
+                .setDescription("Duration of a single client operation attempt (ExecuteQuery, Commit, Rollback).")
                 .build();
 
         this.operationFailed = meter.counterBuilder("ydb.client.operation.failed")
                 .setUnit("{operation}")
-                .setDescription("Unsuccessful operation attempts.")
+                .setDescription("Number of failed client operation attempts.")
                 .build();
 
         this.sessionCreateTime = meter.histogramBuilder("ydb.query.session.create_time")
                 .setUnit("s")
-                .setDescription("Session creation cost (CreateSession + first AttachStream message).")
+                .setDescription("Time spent creating a new session.")
                 .build();
 
         this.sessionPendingRequests = meter.counterBuilder("ydb.query.session.pending_requests")
                 .setUnit("{request}")
-                .setDescription("Increments when a caller starts waiting; use rate for wait pressure.")
+                .setDescription("Number of session-acquire requests that had to wait for a free session.")
                 .build();
 
         this.sessionTimeouts = meter.counterBuilder("ydb.query.session.timeouts")
                 .setUnit("{timeout}")
-                .setDescription("Session acquisition timeouts.")
+                .setDescription("Number of session-acquire timeouts.")
                 .build();
     }
 
@@ -102,7 +102,7 @@ public final class OpenTelemetryMeter implements Meter {
         meter.gaugeBuilder("ydb.query.session.count")
                 .ofLongs()
                 .setUnit("{session}")
-                .setDescription("Current pool session counts.")
+                .setDescription("Current number of sessions in the pool by state.")
                 .buildWithCallback(measurement -> {
                     measurement.record(observer.getIdleCount(), idle);
                     measurement.record(observer.getUsedCount(), used);
@@ -111,13 +111,13 @@ public final class OpenTelemetryMeter implements Meter {
         meter.gaugeBuilder("ydb.query.session.min")
                 .ofLongs()
                 .setUnit("{session}")
-                .setDescription("Configured MinPoolSize.")
+                .setDescription("Configured minimum size of the session pool.")
                 .buildWithCallback(measurement -> measurement.record(observer.getMinSize(), pool));
 
         meter.gaugeBuilder("ydb.query.session.max")
                 .ofLongs()
                 .setUnit("{session}")
-                .setDescription("Configured MaxPoolSize.")
+                .setDescription("Configured maximum size of the session pool.")
                 .buildWithCallback(measurement -> measurement.record(observer.getMaxSize(), pool));
     }
 
