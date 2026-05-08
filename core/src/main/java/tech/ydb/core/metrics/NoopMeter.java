@@ -35,4 +35,12 @@ public final class NoopMeter implements Meter {
     @Override
     public void incrementSessionTimeouts(String poolName) {
     }
+
+    @Override
+    public void recordRetryDuration(String operationName, long durationNanos) {
+    }
+
+    @Override
+    public void recordRetryAttempts(String operationName, int attempts) {
+    }
 }

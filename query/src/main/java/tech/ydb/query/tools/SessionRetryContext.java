@@ -21,6 +21,8 @@ import tech.ydb.core.Result;
 import tech.ydb.core.Status;
 import tech.ydb.core.StatusCode;
 import tech.ydb.core.UnexpectedResultException;
+import tech.ydb.core.metrics.Meter;
+import tech.ydb.core.metrics.NoopMeter;
 import tech.ydb.core.tracing.Scope;
 import tech.ydb.core.tracing.Span;
 import tech.ydb.core.tracing.SpanKind;
@@ -49,6 +51,7 @@ public class SessionRetryContext {
     private final int fastBackoffCeiling;
     private final boolean retryNotFound;
     private final boolean idempotent;
+    private final Meter meter;
 
     private SessionRetryContext(Builder b) {
         this.queryClient = b.queryClient;
@@ -61,6 +64,7 @@ public class SessionRetryContext {
         this.fastBackoffCeiling = b.fastBackoffCeiling;
         this.retryNotFound = b.retryNotFound;
         this.idempotent = b.idempotent;
+        this.meter = b.meter;
     }
 
     public static Builder create(QueryClient sessionSupplier) {
@@ -148,6 +152,7 @@ public class SessionRetryContext {
         private final Tracer tracer;
         private final Span executeSpan;
         private Span trySpan;
+        private final long startNanos = System.nanoTime();
 
         BaseRetryableTask(Function<QuerySession, CompletableFuture<R>> fn) {
             this.fn = fn;
@@ -312,6 +317,8 @@ public class SessionRetryContext {
             finishTrySpan(status, throwable);
             executeSpan.setStatus(status, unwrapped);
             executeSpan.end();
+            meter.recordRetryDuration(EXECUTE_SPAN_NAME, System.nanoTime() - startNanos);
+            meter.recordRetryAttempts(EXECUTE_SPAN_NAME, retryNumber.get() + 1);
         }
     }
 
@@ -368,9 +375,15 @@ public class SessionRetryContext {
         private int fastBackoffCeiling = 10;
         private boolean retryNotFound = true;
         private boolean idempotent = false;
+        private Meter meter = NoopMeter.getInstance();
 
         public Builder(QueryClient queryClient) {
             this.queryClient = queryClient;
+        }
+
+        public Builder withMeter(Meter meter) {
+            this.meter = Objects.requireNonNull(meter, "meter is null");
+            return this;
         }
 
         public Builder executor(Executor executor) {

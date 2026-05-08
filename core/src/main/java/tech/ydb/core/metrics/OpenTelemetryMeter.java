@@ -9,6 +9,7 @@ import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.metrics.DoubleHistogram;
 import io.opentelemetry.api.metrics.LongCounter;
+import io.opentelemetry.api.metrics.LongHistogram;
 
 import tech.ydb.core.Status;
 
@@ -31,6 +32,8 @@ public final class OpenTelemetryMeter implements Meter {
     private final DoubleHistogram sessionCreateTime;
     private final LongCounter sessionPendingRequests;
     private final LongCounter sessionTimeouts;
+    private final DoubleHistogram retryDuration;
+    private final LongHistogram retryAttempts;
 
     private OpenTelemetryMeter(io.opentelemetry.api.metrics.Meter meter, String database, String endpoint) {
         this.meter = Objects.requireNonNull(meter, "meter is null");
@@ -63,6 +66,19 @@ public final class OpenTelemetryMeter implements Meter {
         this.sessionTimeouts = meter.counterBuilder("ydb.query.session.timeouts")
                 .setUnit("{timeout}")
                 .setDescription("Number of session-acquire timeouts.")
+                .build();
+
+        this.retryDuration = meter.histogramBuilder("ydb.client.retry.duration")
+                .setUnit("s")
+                .setDescription("Total user-visible duration of a logical operation executed through the retry policy, "
+                                + "including all attempts and back-off delays.")
+                .build();
+
+        this.retryAttempts = meter.histogramBuilder("ydb.client.retry.attempts")
+                .ofLongs()
+                .setUnit("{attempt}")
+                .setDescription("Total number of attempts performed by the retry policy for one logical operation. "
+                                + "A value of 1 means the operation succeeded on the first try.")
                 .build();
     }
 
@@ -134,6 +150,16 @@ public final class OpenTelemetryMeter implements Meter {
     @Override
     public void incrementSessionTimeouts(String poolName) {
         sessionTimeouts.add(1L, poolAttributes(poolName));
+    }
+
+    @Override
+    public void recordRetryDuration(String operationName, long durationNanos) {
+        retryDuration.record(toSeconds(durationNanos), withOperation(operationName));
+    }
+
+    @Override
+    public void recordRetryAttempts(String operationName, int attempts) {
+        retryAttempts.record(attempts, withOperation(operationName));
     }
 
     private Attributes withOperation(String operationName) {

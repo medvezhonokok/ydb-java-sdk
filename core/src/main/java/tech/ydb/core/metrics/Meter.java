@@ -14,4 +14,8 @@ public interface Meter {
     void incrementSessionPendingRequests(String poolName);
 
     void incrementSessionTimeouts(String poolName);
+
+    void recordRetryDuration(String operationName, long durationNanos);
+
+    void recordRetryAttempts(String operationName, int attempts);
 }
