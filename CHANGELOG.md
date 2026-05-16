@@ -1,3 +1,10 @@
+## 2.4.3 ##
+* Topic: fixed lost onPartitionSessionClosed event
+
+## 2.4.2 ##
+* Topic: fixed idempotent writer behaviour
+* Core: update BouncyCastle version
+
 ## 2.4.1 ##
 * Core: added experimental support of OTel tracing
 * Table: added support of SNAPSHOT_RW isolation level
